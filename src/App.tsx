@@ -5,8 +5,9 @@ import ResumeBuilder from './components/ResumeBuilder';
 import ResumeAnalyzer from './components/ResumeAnalyzer';
 import ResumeList from './components/ResumeList';
 import ConnectionStatus from './components/ConnectionStatus';
+import { useConnectionRecovery } from './hooks/useConnectionRecovery';
 import { Resume, AnalysisResult } from './types';
-import { saveResume, getAllResumes } from './lib/supabase';
+import { saveResume, getAllResumes, cleanup } from './lib/supabase';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'build' | 'analyze' | 'list'>('upload');
@@ -18,6 +19,13 @@ function App() {
   const [savedResumes, setSavedResumes] = useState<Resume[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Initialize permanent connection recovery
+  useConnectionRecovery({
+    onConnectionActive: () => {
+      // Connection is active and maintained
+    }
+  });
+
   // Load saved resumes on component mount
   useEffect(() => {
     const fetchResumes = async () => {
@@ -28,6 +36,11 @@ function App() {
     };
 
     fetchResumes();
+
+    // Cleanup connections on unmount
+    return () => {
+      cleanup();
+    };
   }, []);
 
   const handleResumeUpload = (text: string, resumeData: Resume) => {
