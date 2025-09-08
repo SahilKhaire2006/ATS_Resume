@@ -3,8 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { Resume } from '../types';
 
 // Initialize Supabase client
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('Supabase credentials are missing. Please connect to Supabase from the StackBlitz interface.');
@@ -34,19 +34,17 @@ export async function saveResume(resume: Resume): Promise<{ id: string; error: E
     // Insert or update the main resume record
     const { error: resumeError } = await supabase
       .from('resumes')
-      .upsert(resumeData, { onConflict: 'id' });
+      .upsert(resumeData);
 
     if (resumeError) throw resumeError;
 
     // Handle experience records
     if (resume.experience && resume.experience.length > 0) {
       // First, delete existing experience records for this resume
-      const { error: deleteExpError } = await supabase
+      await supabase
         .from('resume_experiences')
         .delete()
         .eq('resume_id', resumeId);
-
-      if (deleteExpError) throw deleteExpError;
 
       // Then insert the new experience records
       const experienceData = resume.experience.map((exp, index) => ({
@@ -70,12 +68,10 @@ export async function saveResume(resume: Resume): Promise<{ id: string; error: E
     // Handle education records
     if (resume.education && resume.education.length > 0) {
       // First, delete existing education records for this resume
-      const { error: deleteEduError } = await supabase
+      await supabase
         .from('resume_education')
         .delete()
         .eq('resume_id', resumeId);
-
-      if (deleteEduError) throw deleteEduError;
 
       // Then insert the new education records
       const educationData = resume.education.map((edu, index) => ({
@@ -100,12 +96,10 @@ export async function saveResume(resume: Resume): Promise<{ id: string; error: E
     // Handle certification records
     if (resume.certifications && resume.certifications.length > 0) {
       // First, delete existing certification records for this resume
-      const { error: deleteCertError } = await supabase
+      await supabase
         .from('resume_certifications')
         .delete()
         .eq('resume_id', resumeId);
-
-      if (deleteCertError) throw deleteCertError;
 
       // Then insert the new certification records
       const certificationData = resume.certifications.map((cert, index) => ({
@@ -289,7 +283,6 @@ export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error
 
 export async function deleteResume(id: string): Promise<{ error: Error | null }> {
   try {
-    // Delete the main resume record (cascade delete should handle related records)
     const { error } = await supabase
       .from('resumes')
       .delete()
