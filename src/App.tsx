@@ -4,6 +4,7 @@ import ResumeUploader from './components/ResumeUploader';
 import ResumeBuilder from './components/ResumeBuilder';
 import ResumeAnalyzer from './components/ResumeAnalyzer';
 import ResumeList from './components/ResumeList';
+import ConnectionStatus from './components/ConnectionStatus';
 import { Resume, AnalysisResult } from './types';
 import { saveResume, getAllResumes } from './lib/supabase';
 
@@ -176,6 +177,8 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <ConnectionStatus />
+      
       <header className="bg-indigo-700 text-white shadow-lg">
         <div className="container mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
