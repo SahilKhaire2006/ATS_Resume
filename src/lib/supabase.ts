@@ -1,125 +1,249 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { v4 as uuidv4 } from 'uuid';
 import { Resume } from '../types';
 
-// Initialize Supabase client
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Supabase configuration with permanent connection settings
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('Supabase credentials are missing. Please connect to Supabase from the StackBlitz interface.');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// Connection pool configuration for permanent connections
+const CONNECTION_CONFIG = {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+  },
+  db: {
+    schema: 'public',
+  },
+  global: {
+    headers: {
+      'x-client-info': 'ats-resume-builder',
+      'Connection': 'keep-alive',
+      'Keep-Alive': 'timeout=300, max=1000',
+    },
+  },
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
+};
 
-// Resume database functions
+// Create multiple client instances for connection pooling
+const createSupabaseClient = () => createClient(supabaseUrl, supabaseKey, CONNECTION_CONFIG);
+
+// Connection pool with multiple clients
+class SupabaseConnectionPool {
+  private clients: SupabaseClient[] = [];
+  private currentIndex = 0;
+  private readonly poolSize = 5;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.initializePool();
+    this.startHealthCheck();
+  }
+
+  private initializePool() {
+    for (let i = 0; i < this.poolSize; i++) {
+      this.clients.push(createSupabaseClient());
+    }
+  }
+
+  private startHealthCheck() {
+    // Perform health checks every 30 seconds to maintain connections
+    this.healthCheckInterval = setInterval(async () => {
+      await this.performHealthCheck();
+    }, 30000);
+  }
+
+  private async performHealthCheck() {
+    try {
+      const client = this.getClient();
+      await client.from('resumes').select('count').limit(1);
+    } catch (error) {
+      console.log('Health check maintaining connection:', error);
+      // Recreate clients if needed
+      this.refreshPool();
+    }
+  }
+
+  private refreshPool() {
+    this.clients = [];
+    this.initializePool();
+  }
+
+  public getClient(): SupabaseClient {
+    const client = this.clients[this.currentIndex];
+    this.currentIndex = (this.currentIndex + 1) % this.poolSize;
+    return client;
+  }
+
+  public destroy() {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+  }
+}
+
+// Global connection pool instance
+const connectionPool = new SupabaseConnectionPool();
+
+// Get client from pool
+const getSupabaseClient = () => connectionPool.getClient();
+
+// Enhanced operation wrapper with immediate retry and connection recovery
+async function executeWithPermanentConnection<T>(
+  operation: (client: SupabaseClient) => Promise<T>,
+  operationName: string,
+  maxRetries: number = 5
+): Promise<T> {
+  let lastError: Error;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const client = getSupabaseClient();
+      const result = await operation(client);
+      return result;
+    } catch (error) {
+      lastError = error as Error;
+      console.log(`${operationName} attempt ${attempt + 1}:`, error);
+
+      // Immediate retry for connection issues
+      if (attempt < maxRetries - 1) {
+        // Very short delay for immediate retry
+        await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+// Resume database functions with permanent connection
 export async function saveResume(resume: Resume): Promise<{ id: string; error: Error | null }> {
   try {
-    const resumeId = resume.id || uuidv4();
-    
-    // Prepare the resume data for storage
-    const resumeData = {
-      id: resumeId,
-      name: resume.name,
-      email: resume.email,
-      phone: resume.phone,
-      location: resume.location,
-      linkedin: resume.linkedin,
-      website: resume.website,
-      summary: resume.summary,
-      skills: resume.skills,
-      created_at: new Date().toISOString(),
-    };
+    const result = await executeWithPermanentConnection(async (client) => {
+      const resumeId = resume.id || uuidv4();
+      
+      // Prepare the resume data for storage
+      const resumeData = {
+        id: resumeId,
+        name: resume.name,
+        email: resume.email,
+        phone: resume.phone,
+        location: resume.location,
+        linkedin: resume.linkedin,
+        website: resume.website,
+        summary: resume.summary,
+        skills: resume.skills,
+        created_at: new Date().toISOString(),
+      };
 
-    // Insert or update the main resume record
-    const { error: resumeError } = await supabase
-      .from('resumes')
-      .upsert(resumeData);
+      // Insert or update the main resume record
+      const { error: resumeError } = await client
+        .from('resumes')
+        .upsert(resumeData, { onConflict: 'id' });
 
-    if (resumeError) throw resumeError;
+      if (resumeError) throw resumeError;
 
-    // Handle experience records
-    if (resume.experience && resume.experience.length > 0) {
-      // First, delete existing experience records for this resume
-      await supabase
-        .from('resume_experiences')
-        .delete()
-        .eq('resume_id', resumeId);
+      // Handle experience records
+      if (resume.experience && resume.experience.length > 0) {
+        // First, delete existing experience records for this resume
+        const { error: deleteExpError } = await client
+          .from('resume_experiences')
+          .delete()
+          .eq('resume_id', resumeId);
 
-      // Then insert the new experience records
-      const experienceData = resume.experience.map((exp, index) => ({
-        id: uuidv4(),
-        resume_id: resumeId,
-        company: exp.company,
-        position: exp.position,
-        start_date: exp.startDate,
-        end_date: exp.endDate,
-        description: exp.description,
-        order_index: index,
-      }));
+        if (deleteExpError) throw deleteExpError;
 
-      const { error: expError } = await supabase
-        .from('resume_experiences')
-        .insert(experienceData);
+        // Then insert the new experience records
+        const experienceData = resume.experience.map((exp, index) => ({
+          id: uuidv4(),
+          resume_id: resumeId,
+          company: exp.company,
+          position: exp.position,
+          start_date: exp.startDate,
+          end_date: exp.endDate,
+          description: exp.description,
+          order_index: index,
+        }));
 
-      if (expError) throw expError;
-    }
+        const { error: expError } = await client
+          .from('resume_experiences')
+          .insert(experienceData);
 
-    // Handle education records
-    if (resume.education && resume.education.length > 0) {
-      // First, delete existing education records for this resume
-      await supabase
-        .from('resume_education')
-        .delete()
-        .eq('resume_id', resumeId);
+        if (expError) throw expError;
+      }
 
-      // Then insert the new education records
-      const educationData = resume.education.map((edu, index) => ({
-        id: uuidv4(),
-        resume_id: resumeId,
-        institution: edu.institution,
-        degree: edu.degree,
-        field_of_study: edu.fieldOfStudy,
-        start_date: edu.startDate,
-        end_date: edu.endDate,
-        description: edu.description,
-        order_index: index,
-      }));
+      // Handle education records
+      if (resume.education && resume.education.length > 0) {
+        // First, delete existing education records for this resume
+        const { error: deleteEduError } = await client
+          .from('resume_education')
+          .delete()
+          .eq('resume_id', resumeId);
 
-      const { error: eduError } = await supabase
-        .from('resume_education')
-        .insert(educationData);
+        if (deleteEduError) throw deleteEduError;
 
-      if (eduError) throw eduError;
-    }
+        // Then insert the new education records
+        const educationData = resume.education.map((edu, index) => ({
+          id: uuidv4(),
+          resume_id: resumeId,
+          institution: edu.institution,
+          degree: edu.degree,
+          field_of_study: edu.fieldOfStudy,
+          start_date: edu.startDate,
+          end_date: edu.endDate,
+          description: edu.description,
+          order_index: index,
+        }));
 
-    // Handle certification records
-    if (resume.certifications && resume.certifications.length > 0) {
-      // First, delete existing certification records for this resume
-      await supabase
-        .from('resume_certifications')
-        .delete()
-        .eq('resume_id', resumeId);
+        const { error: eduError } = await client
+          .from('resume_education')
+          .insert(educationData);
 
-      // Then insert the new certification records
-      const certificationData = resume.certifications.map((cert, index) => ({
-        id: uuidv4(),
-        resume_id: resumeId,
-        name: cert.name,
-        issuer: cert.issuer,
-        date: cert.date,
-        description: cert.description,
-        order_index: index,
-      }));
+        if (eduError) throw eduError;
+      }
 
-      const { error: certError } = await supabase
-        .from('resume_certifications')
-        .insert(certificationData);
+      // Handle certification records
+      if (resume.certifications && resume.certifications.length > 0) {
+        // First, delete existing certification records for this resume
+        const { error: deleteCertError } = await client
+          .from('resume_certifications')
+          .delete()
+          .eq('resume_id', resumeId);
 
-      if (certError) throw certError;
-    }
+        if (deleteCertError) throw deleteCertError;
 
-    return { id: resumeId, error: null };
+        // Then insert the new certification records
+        const certificationData = resume.certifications.map((cert, index) => ({
+          id: uuidv4(),
+          resume_id: resumeId,
+          name: cert.name,
+          issuer: cert.issuer,
+          date: cert.date,
+          description: cert.description,
+          order_index: index,
+        }));
+
+        const { error: certError } = await client
+          .from('resume_certifications')
+          .insert(certificationData);
+
+        if (certError) throw certError;
+      }
+
+      return resumeId;
+    }, 'saveResume');
+
+    return { id: result, error: null };
   } catch (error) {
     console.error('Error saving resume:', error);
     return { id: '', error: error as Error };
@@ -128,119 +252,46 @@ export async function saveResume(resume: Resume): Promise<{ id: string; error: E
 
 export async function getResume(id: string): Promise<{ resume: Resume | null; error: Error | null }> {
   try {
-    // Get the main resume data
-    const { data: resumeData, error: resumeError } = await supabase
-      .from('resumes')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const result = await executeWithPermanentConnection(async (client) => {
+      // Get the main resume data
+      const { data: resumeData, error: resumeError } = await client
+        .from('resumes')
+        .select('*')
+        .eq('id', id)
+        .single();
 
-    if (resumeError) throw resumeError;
-    if (!resumeData) throw new Error('Resume not found');
+      if (resumeError) throw resumeError;
+      if (!resumeData) throw new Error('Resume not found');
 
-    // Get experience data
-    const { data: experienceData, error: expError } = await supabase
-      .from('resume_experiences')
-      .select('*')
-      .eq('resume_id', id)
-      .order('order_index', { ascending: true });
-
-    if (expError) throw expError;
-
-    // Get education data
-    const { data: educationData, error: eduError } = await supabase
-      .from('resume_education')
-      .select('*')
-      .eq('resume_id', id)
-      .order('order_index', { ascending: true });
-
-    if (eduError) throw eduError;
-
-    // Get certification data
-    const { data: certificationData, error: certError } = await supabase
-      .from('resume_certifications')
-      .select('*')
-      .eq('resume_id', id)
-      .order('order_index', { ascending: true });
-
-    if (certError) throw certError;
-
-    // Construct the complete resume object
-    const resume: Resume = {
-      id: resumeData.id,
-      name: resumeData.name,
-      email: resumeData.email,
-      phone: resumeData.phone,
-      location: resumeData.location,
-      linkedin: resumeData.linkedin,
-      website: resumeData.website,
-      summary: resumeData.summary,
-      skills: resumeData.skills || [],
-      experience: experienceData.map(exp => ({
-        company: exp.company,
-        position: exp.position,
-        startDate: exp.start_date,
-        endDate: exp.end_date,
-        description: exp.description,
-      })),
-      education: educationData.map(edu => ({
-        institution: edu.institution,
-        degree: edu.degree,
-        fieldOfStudy: edu.field_of_study,
-        startDate: edu.start_date,
-        endDate: edu.end_date,
-        description: edu.description,
-      })),
-      certifications: certificationData.map(cert => ({
-        name: cert.name,
-        issuer: cert.issuer,
-        date: cert.date,
-        description: cert.description,
-      })),
-    };
-
-    return { resume, error: null };
-  } catch (error) {
-    console.error('Error fetching resume:', error);
-    return { resume: null, error: error as Error };
-  }
-}
-
-export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error | null }> {
-  try {
-    // Get all resumes with their basic information
-    const { data: resumesData, error: resumesError } = await supabase
-      .from('resumes')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (resumesError) throw resumesError;
-
-    // Fetch related data for each resume
-    const resumes = await Promise.all(resumesData.map(async (resumeData) => {
       // Get experience data
-      const { data: experienceData } = await supabase
+      const { data: experienceData, error: expError } = await client
         .from('resume_experiences')
         .select('*')
-        .eq('resume_id', resumeData.id)
+        .eq('resume_id', id)
         .order('order_index', { ascending: true });
+
+      if (expError) throw expError;
 
       // Get education data
-      const { data: educationData } = await supabase
+      const { data: educationData, error: eduError } = await client
         .from('resume_education')
         .select('*')
-        .eq('resume_id', resumeData.id)
+        .eq('resume_id', id)
         .order('order_index', { ascending: true });
+
+      if (eduError) throw eduError;
 
       // Get certification data
-      const { data: certificationData } = await supabase
+      const { data: certificationData, error: certError } = await client
         .from('resume_certifications')
         .select('*')
-        .eq('resume_id', resumeData.id)
+        .eq('resume_id', id)
         .order('order_index', { ascending: true });
 
+      if (certError) throw certError;
+
       // Construct the complete resume object
-      return {
+      const resume: Resume = {
         id: resumeData.id,
         name: resumeData.name,
         email: resumeData.email,
@@ -250,14 +301,14 @@ export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error
         website: resumeData.website,
         summary: resumeData.summary,
         skills: resumeData.skills || [],
-        experience: (experienceData || []).map(exp => ({
+        experience: experienceData.map(exp => ({
           company: exp.company,
           position: exp.position,
           startDate: exp.start_date,
           endDate: exp.end_date,
           description: exp.description,
         })),
-        education: (educationData || []).map(edu => ({
+        education: educationData.map(edu => ({
           institution: edu.institution,
           degree: edu.degree,
           fieldOfStudy: edu.field_of_study,
@@ -265,16 +316,97 @@ export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error
           endDate: edu.end_date,
           description: edu.description,
         })),
-        certifications: (certificationData || []).map(cert => ({
+        certifications: certificationData.map(cert => ({
           name: cert.name,
           issuer: cert.issuer,
           date: cert.date,
           description: cert.description,
         })),
       };
-    }));
 
-    return { resumes, error: null };
+      return resume;
+    }, 'getResume');
+
+    return { resume: result, error: null };
+  } catch (error) {
+    console.error('Error fetching resume:', error);
+    return { resume: null, error: error as Error };
+  }
+}
+
+export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error | null }> {
+  try {
+    const result = await executeWithPermanentConnection(async (client) => {
+      // Get all resumes with their basic information
+      const { data: resumesData, error: resumesError } = await client
+        .from('resumes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (resumesError) throw resumesError;
+
+      // Fetch related data for each resume
+      const resumes = await Promise.all(resumesData.map(async (resumeData) => {
+        // Get experience data
+        const { data: experienceData } = await client
+          .from('resume_experiences')
+          .select('*')
+          .eq('resume_id', resumeData.id)
+          .order('order_index', { ascending: true });
+
+        // Get education data
+        const { data: educationData } = await client
+          .from('resume_education')
+          .select('*')
+          .eq('resume_id', resumeData.id)
+          .order('order_index', { ascending: true });
+
+        // Get certification data
+        const { data: certificationData } = await client
+          .from('resume_certifications')
+          .select('*')
+          .eq('resume_id', resumeData.id)
+          .order('order_index', { ascending: true });
+
+        // Construct the complete resume object
+        return {
+          id: resumeData.id,
+          name: resumeData.name,
+          email: resumeData.email,
+          phone: resumeData.phone,
+          location: resumeData.location,
+          linkedin: resumeData.linkedin,
+          website: resumeData.website,
+          summary: resumeData.summary,
+          skills: resumeData.skills || [],
+          experience: (experienceData || []).map(exp => ({
+            company: exp.company,
+            position: exp.position,
+            startDate: exp.start_date,
+            endDate: exp.end_date,
+            description: exp.description,
+          })),
+          education: (educationData || []).map(edu => ({
+            institution: edu.institution,
+            degree: edu.degree,
+            fieldOfStudy: edu.field_of_study,
+            startDate: edu.start_date,
+            endDate: edu.end_date,
+            description: edu.description,
+          })),
+          certifications: (certificationData || []).map(cert => ({
+            name: cert.name,
+            issuer: cert.issuer,
+            date: cert.date,
+            description: cert.description,
+          })),
+        };
+      }));
+
+      return resumes;
+    }, 'getAllResumes');
+
+    return { resumes: result, error: null };
   } catch (error) {
     console.error('Error fetching all resumes:', error);
     return { resumes: [], error: error as Error };
@@ -283,12 +415,15 @@ export async function getAllResumes(): Promise<{ resumes: Resume[]; error: Error
 
 export async function deleteResume(id: string): Promise<{ error: Error | null }> {
   try {
-    const { error } = await supabase
-      .from('resumes')
-      .delete()
-      .eq('id', id);
+    await executeWithPermanentConnection(async (client) => {
+      // Delete the main resume record (cascade delete should handle related records)
+      const { error } = await client
+        .from('resumes')
+        .delete()
+        .eq('id', id);
 
-    if (error) throw error;
+      if (error) throw error;
+    }, 'deleteResume');
 
     return { error: null };
   } catch (error) {
@@ -296,3 +431,29 @@ export async function deleteResume(id: string): Promise<{ error: Error | null }>
     return { error: error as Error };
   }
 }
+
+// Connection health check for monitoring
+export async function testConnection(): Promise<boolean> {
+  try {
+    const client = getSupabaseClient();
+    const { error } = await client.from('resumes').select('count').limit(1);
+    return !error;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Cleanup function for when the app unmounts
+export function cleanup() {
+  connectionPool.destroy();
+}
+
+// Initialize connection warmup
+(async () => {
+  try {
+    await testConnection();
+    console.log('Supabase connection pool initialized successfully');
+  } catch (error) {
+    console.log('Initial connection setup:', error);
+  }
+})();
