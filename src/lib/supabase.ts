@@ -2,6 +2,13 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { v4 as uuidv4 } from 'uuid';
 import { Resume } from '../types';
 
+// Add proper TypeScript declarations
+declare global {
+  var NodeJS: {
+    Timeout: any;
+  };
+}
+
 // Add NodeJS timeout type for better TypeScript support
 declare global {
   var NodeJS: {
@@ -49,7 +56,7 @@ class SupabaseConnectionPool {
   private clients: SupabaseClient[] = [];
   private currentIndex = 0;
   private readonly poolSize = 5;
-  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private healthCheckInterval: any = null;
 
   constructor() {
     this.initializePool();
@@ -58,7 +65,8 @@ class SupabaseConnectionPool {
 
   private initializePool() {
     for (let i = 0; i < this.poolSize; i++) {
-      this.clients.push(createSupabaseClient());
+      const client = createSupabaseClient();
+      this.clients.push(client);
     }
   }
 
@@ -110,7 +118,7 @@ async function executeWithPermanentConnection<T>(
   operationName: string,
   maxRetries: number = 5
 ): Promise<T> {
-  let lastError: Error;
+  let lastError: Error = new Error('Unknown error occurred');
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
