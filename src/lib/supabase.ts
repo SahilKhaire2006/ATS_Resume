@@ -2,6 +2,13 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { v4 as uuidv4 } from 'uuid';
 import { Resume } from '../types';
 
+// Add NodeJS timeout type for better TypeScript support
+declare global {
+  var NodeJS: {
+    Timeout: any;
+  };
+}
+
 // Supabase configuration with permanent connection settings
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
