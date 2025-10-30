@@ -88,7 +88,8 @@ class SupabaseConnectionPool {
     }
   }
 
-  private refreshPool() {
+  public refreshPool() {
+    console.log('Refreshing connection pool...');
     this.clients = [];
     this.initializePool();
   }
@@ -129,9 +130,24 @@ async function executeWithPermanentConnection<T>(
       lastError = error as Error;
       console.log(`${operationName} attempt ${attempt + 1}:`, error);
 
-      // Immediate retry for connection issues
+      // Check if it's a session or connection error
+      const errorMessage = error instanceof Error ? error.message.toLowerCase() : '';
+      const isSessionError = errorMessage.includes('session') ||
+                            errorMessage.includes('jwt') ||
+                            errorMessage.includes('expired') ||
+                            errorMessage.includes('invalid') ||
+                            errorMessage.includes('connection') ||
+                            errorMessage.includes('network');
+
+      if (isSessionError && attempt < maxRetries - 1) {
+        // Refresh the connection pool for session errors
+        connectionPool['refreshPool']();
+        await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
+        continue;
+      }
+
+      // Immediate retry for other connection issues
       if (attempt < maxRetries - 1) {
-        // Very short delay for immediate retry
         await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
         continue;
       }
@@ -461,6 +477,11 @@ export async function testConnection(): Promise<boolean> {
 // Cleanup function for when the app unmounts
 export function cleanup() {
   connectionPool.destroy();
+}
+
+// Force refresh the connection pool
+export function refreshConnections() {
+  connectionPool.refreshPool();
 }
 
 // Initialize connection warmup

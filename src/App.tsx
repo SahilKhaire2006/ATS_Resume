@@ -7,7 +7,7 @@ import ResumeList from './components/ResumeList';
 import ConnectionStatus from './components/ConnectionStatus';
 import { useConnectionRecovery } from './hooks/useConnectionRecovery';
 import { Resume, AnalysisResult } from './types';
-import { saveResume, getAllResumes, cleanup } from './lib/supabase';
+import { saveResume, getAllResumes, cleanup, refreshConnections } from './lib/supabase';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'build' | 'analyze' | 'list'>('upload');
@@ -26,20 +26,41 @@ function App() {
     }
   });
 
-  // Load saved resumes on component mount
+  // Load saved resumes on component mount and when returning to the app
   useEffect(() => {
     const fetchResumes = async () => {
       const { resumes, error } = await getAllResumes();
       if (!error) {
         setSavedResumes(resumes);
+      } else {
+        console.error('Failed to load resumes:', error);
       }
     };
 
     fetchResumes();
 
+    // Refresh data when user returns to the tab
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        refreshConnections();
+        fetchResumes();
+      }
+    };
+
+    // Refresh data when window gains focus
+    const handleFocus = () => {
+      refreshConnections();
+      fetchResumes();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
     // Cleanup connections on unmount
     return () => {
       cleanup();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
     };
   }, []);
 

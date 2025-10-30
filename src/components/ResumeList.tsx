@@ -13,6 +13,12 @@ const ResumeList: React.FC<ResumeListProps> = ({ resumes: initialResumes, onSele
   const [searchTerm, setSearchTerm] = useState('');
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Sync with parent component's resumes
+  React.useEffect(() => {
+    setResumes(initialResumes);
+  }, [initialResumes]);
 
   const handleDeleteResume = async (id: string) => {
     if (!id) return;
@@ -41,18 +47,24 @@ const ResumeList: React.FC<ResumeListProps> = ({ resumes: initialResumes, onSele
   };
 
   const refreshResumes = async () => {
+    setIsRefreshing(true);
+    setError(null);
+
     try {
       const { resumes: freshResumes, error } = await getAllResumes();
-      
+
       if (error) {
-        setError('Failed to refresh resumes. Please try again.');
+        setError('Failed to refresh resumes. Your session may have expired. Please reload the page.');
         console.error('Error refreshing resumes:', error);
       } else {
         setResumes(freshResumes);
+        setError(null);
       }
     } catch (err) {
-      setError('An unexpected error occurred. Please try again.');
+      setError('Connection issue detected. Please check your internet connection and try again.');
       console.error('Error in refreshResumes:', err);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -80,9 +92,17 @@ const ResumeList: React.FC<ResumeListProps> = ({ resumes: initialResumes, onSele
         
         <button
           onClick={refreshResumes}
-          className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+          disabled={isRefreshing}
+          className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Refresh
+          {isRefreshing ? (
+            <>
+              <div className="animate-spin h-4 w-4 border-2 border-gray-500 rounded-full border-t-transparent mr-2"></div>
+              Refreshing...
+            </>
+          ) : (
+            'Refresh'
+          )}
         </button>
       </div>
       
